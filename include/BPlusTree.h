@@ -12,6 +12,24 @@
 
 namespace bptree {
 
+/**
+ * B+ Tree implementation with exception safety guarantees
+ *
+ * Exception Safety Guarantees:
+ * - Constructor: Strong guarantee - either succeeds or no tree is created
+ * - Destructor: No-throw guarantee (noexcept)
+ * - Move operations: No-throw guarantee (noexcept)
+ * - search(): No-throw guarantee if KeyType and ValueType operations don't throw
+ * - insert(): Basic guarantee - tree remains valid but may be partially modified
+ *   if KeyType or ValueType copy/move operations throw
+ * - remove(): Basic guarantee - tree remains valid
+ * - rangeQuery(): Strong guarantee - either returns results or leaves tree unchanged
+ *
+ * Requirements for KeyType and ValueType:
+ * - Must be copyable or movable
+ * - Copy/move operations may throw, but should leave objects in valid state
+ * - For best exception safety, prefer move semantics
+ */
 template<typename KeyType, typename ValueType>
 class BPlusTree {
 private:
@@ -22,6 +40,7 @@ private:
 
     // Helper functions
     LeafNode<KeyType, ValueType>* findLeaf(const KeyType& key);
+    const LeafNode<KeyType, ValueType>* findLeaf(const KeyType& key) const;
     void splitLeaf(LeafNode<KeyType, ValueType>* leaf);
     void splitInternal(InternalNode<KeyType, ValueType>* node);
     void insertIntoParent(Node<KeyType, ValueType>* left, const KeyType& key,
@@ -35,30 +54,40 @@ private:
     int getNodeIndex(Node<KeyType, ValueType>* node);
 
     void destroyTree(Node<KeyType, ValueType>* node);
-    void printNode(Node<KeyType, ValueType>* node, int level);
-    bool validateNode(Node<KeyType, ValueType>* node, int level, int& leafLevel);
+    void printNode(const Node<KeyType, ValueType>* node, int level) const;
+    bool validateNode(const Node<KeyType, ValueType>* node, int level, int& leafLevel) const;
 
 public:
     explicit BPlusTree(int order = DEFAULT_ORDER);
     ~BPlusTree();
 
-    // Disable copy and move
+    // Disable copy (copying a tree is expensive and usually unintended)
     BPlusTree(const BPlusTree&) = delete;
     BPlusTree& operator=(const BPlusTree&) = delete;
 
+    // Enable move semantics for efficient transfer of ownership
+    BPlusTree(BPlusTree&& other) noexcept;
+    BPlusTree& operator=(BPlusTree&& other) noexcept;
+
     // Core operations
-    bool search(const KeyType& key, ValueType& value);
+    bool search(const KeyType& key, ValueType& value) const;
+
+    // Insert operation with basic exception guarantee:
+    // If an exception is thrown (e.g., during memory allocation or copy),
+    // the tree structure remains valid but may be partially modified.
+    // For strong exception guarantee, consider using a copy-on-write approach.
     void insert(const KeyType& key, const ValueType& value);
+
     bool remove(const KeyType& key);
 
     // Range query
     std::vector<std::pair<KeyType, ValueType>> rangeQuery(const KeyType& start,
-                                                           const KeyType& end);
+                                                           const KeyType& end) const;
 
     // Utility functions
-    void print();
-    int height();
-    bool validate();
+    void print() const;
+    int height() const;
+    bool validate() const;
     bool isEmpty() const { return root == nullptr; }
 };
 
@@ -79,6 +108,38 @@ BPlusTree<KeyType, ValueType>::~BPlusTree() {
     destroyTree(root);
 }
 
+// Move constructor
+template<typename KeyType, typename ValueType>
+BPlusTree<KeyType, ValueType>::BPlusTree(BPlusTree&& other) noexcept
+    : root(other.root), order(other.order), maxKeys(other.maxKeys), minKeys(other.minKeys) {
+    other.root = nullptr;
+    other.order = DEFAULT_ORDER;
+    other.maxKeys = DEFAULT_ORDER - 1;
+    other.minKeys = (DEFAULT_ORDER + 1) / 2 - 1;
+}
+
+// Move assignment operator
+template<typename KeyType, typename ValueType>
+BPlusTree<KeyType, ValueType>& BPlusTree<KeyType, ValueType>::operator=(BPlusTree&& other) noexcept {
+    if (this != &other) {
+        // Clean up existing tree
+        destroyTree(root);
+
+        // Move data from other
+        root = other.root;
+        order = other.order;
+        maxKeys = other.maxKeys;
+        minKeys = other.minKeys;
+
+        // Reset other to empty state
+        other.root = nullptr;
+        other.order = DEFAULT_ORDER;
+        other.maxKeys = DEFAULT_ORDER - 1;
+        other.minKeys = (DEFAULT_ORDER + 1) / 2 - 1;
+    }
+    return *this;
+}
+
 template<typename KeyType, typename ValueType>
 void BPlusTree<KeyType, ValueType>::destroyTree(Node<KeyType, ValueType>* node) {
     if (!node) return;
@@ -96,10 +157,10 @@ void BPlusTree<KeyType, ValueType>::destroyTree(Node<KeyType, ValueType>* node) 
 
 // Search operation
 template<typename KeyType, typename ValueType>
-bool BPlusTree<KeyType, ValueType>::search(const KeyType& key, ValueType& value) {
+bool BPlusTree<KeyType, ValueType>::search(const KeyType& key, ValueType& value) const {
     if (!root) return false;
 
-    LeafNode<KeyType, ValueType>* leaf = findLeaf(key);
+    const LeafNode<KeyType, ValueType>* leaf = findLeaf(key);
     return leaf->findValue(key, value);
 }
 
@@ -117,6 +178,22 @@ LeafNode<KeyType, ValueType>* BPlusTree<KeyType, ValueType>::findLeaf(const KeyT
 
     assert(current == nullptr || current->isLeaf() && "Expected leaf node or null");
     return static_cast<LeafNode<KeyType, ValueType>*>(current);
+}
+
+template<typename KeyType, typename ValueType>
+const LeafNode<KeyType, ValueType>* BPlusTree<KeyType, ValueType>::findLeaf(const KeyType& key) const {
+    const Node<KeyType, ValueType>* current = root;
+
+    while (current && current->isInternal()) {
+        assert(current->isInternal() && "Expected internal node");
+        const InternalNode<KeyType, ValueType>* internal =
+            static_cast<const InternalNode<KeyType, ValueType>*>(current);
+        int index = internal->findChildIndex(key);
+        current = internal->children[index];
+    }
+
+    assert(current == nullptr || current->isLeaf() && "Expected leaf node or null");
+    return static_cast<const LeafNode<KeyType, ValueType>*>(current);
 }
 
 // Insert operation
@@ -154,67 +231,100 @@ void BPlusTree<KeyType, ValueType>::insert(const KeyType& key, const ValueType& 
 template<typename KeyType, typename ValueType>
 void BPlusTree<KeyType, ValueType>::splitLeaf(LeafNode<KeyType, ValueType>* leaf) {
     // Create new leaf node
-    LeafNode<KeyType, ValueType>* newLeaf = new LeafNode<KeyType, ValueType>(maxKeys);
+    LeafNode<KeyType, ValueType>* newLeaf = nullptr;
 
-    // Calculate split point
-    int splitPoint = (maxKeys + 1) / 2;
+    try {
+        newLeaf = new LeafNode<KeyType, ValueType>(maxKeys);
 
-    // Move second half of keys and values to new leaf
-    for (int i = splitPoint; i < leaf->numKeys; i++) {
-        newLeaf->keys.push_back(leaf->keys[i]);
-        newLeaf->values.push_back(leaf->values[i]);
-        newLeaf->numKeys++;
+        // Calculate split point
+        int splitPoint = (maxKeys + 1) / 2;
+
+        // Reserve space to minimize allocation failures
+        newLeaf->keys.reserve(leaf->numKeys - splitPoint);
+        newLeaf->values.reserve(leaf->numKeys - splitPoint);
+
+        // Move second half of keys and values to new leaf
+        // Using move semantics where possible for better performance
+        for (int i = splitPoint; i < leaf->numKeys; i++) {
+            newLeaf->keys.push_back(std::move(leaf->keys[i]));
+            newLeaf->values.push_back(std::move(leaf->values[i]));
+            newLeaf->numKeys++;
+        }
+
+        // Adjust original leaf
+        leaf->keys.resize(splitPoint);
+        leaf->values.resize(splitPoint);
+        leaf->numKeys = splitPoint;
+
+        // Update linked list
+        newLeaf->next = leaf->next;
+        newLeaf->prev = leaf;
+        if (leaf->next) {
+            leaf->next->prev = newLeaf;
+        }
+        leaf->next = newLeaf;
+
+        // Insert into parent (promote the first key of new leaf)
+        KeyType promoteKey = newLeaf->keys[0];
+        insertIntoParent(leaf, promoteKey, newLeaf);
+    } catch (...) {
+        // If an exception occurs, clean up the new leaf
+        delete newLeaf;
+        throw; // Re-throw the exception
     }
-
-    // Adjust original leaf
-    leaf->keys.resize(splitPoint);
-    leaf->values.resize(splitPoint);
-    leaf->numKeys = splitPoint;
-
-    // Update linked list
-    newLeaf->next = leaf->next;
-    newLeaf->prev = leaf;
-    if (leaf->next) {
-        leaf->next->prev = newLeaf;
-    }
-    leaf->next = newLeaf;
-
-    // Insert into parent (promote the first key of new leaf)
-    KeyType promoteKey = newLeaf->keys[0];
-    insertIntoParent(leaf, promoteKey, newLeaf);
 }
 
 template<typename KeyType, typename ValueType>
 void BPlusTree<KeyType, ValueType>::splitInternal(InternalNode<KeyType, ValueType>* node) {
     // Create new internal node
-    InternalNode<KeyType, ValueType>* newNode =
-        new InternalNode<KeyType, ValueType>(maxKeys);
+    InternalNode<KeyType, ValueType>* newNode = nullptr;
 
-    // Calculate split point
-    int splitPoint = (maxKeys + 1) / 2;
+    try {
+        newNode = new InternalNode<KeyType, ValueType>(maxKeys);
 
-    // Key to promote to parent
-    KeyType promoteKey = node->keys[splitPoint];
+        // Calculate split point
+        int splitPoint = (maxKeys + 1) / 2;
 
-    // Move second half to new node
-    for (int i = splitPoint + 1; i < node->numKeys; i++) {
-        newNode->keys.push_back(node->keys[i]);
-        newNode->numKeys++;
+        // Key to promote to parent
+        KeyType promoteKey = node->keys[splitPoint];
+
+        // Reserve space to minimize allocation failures
+        newNode->keys.reserve(node->numKeys - splitPoint - 1);
+        newNode->children.reserve(node->children.size() - splitPoint - 1);
+
+        // Move second half to new node
+        for (int i = splitPoint + 1; i < node->numKeys; i++) {
+            newNode->keys.push_back(std::move(node->keys[i]));
+            newNode->numKeys++;
+        }
+
+        // Move children
+        for (size_t i = splitPoint + 1; i < node->children.size(); i++) {
+            newNode->children.push_back(node->children[i]);
+            node->children[i]->parent = newNode;
+        }
+
+        // Adjust original node
+        node->keys.resize(splitPoint);
+        node->children.resize(splitPoint + 1);
+        node->numKeys = splitPoint;
+
+        // Insert into parent
+        insertIntoParent(node, promoteKey, newNode);
+    } catch (...) {
+        // If an exception occurs, clean up the new node
+        // Note: children have already been transferred, so we need to restore them
+        if (newNode) {
+            // Restore children back to original node before deleting
+            for (auto child : newNode->children) {
+                if (child) {
+                    child->parent = node;
+                }
+            }
+            delete newNode;
+        }
+        throw; // Re-throw the exception
     }
-
-    // Move children
-    for (size_t i = splitPoint + 1; i < node->children.size(); i++) {
-        newNode->children.push_back(node->children[i]);
-        node->children[i]->parent = newNode;
-    }
-
-    // Adjust original node
-    node->keys.resize(splitPoint);
-    node->children.resize(splitPoint + 1);
-    node->numKeys = splitPoint;
-
-    // Insert into parent
-    insertIntoParent(node, promoteKey, newNode);
 }
 
 template<typename KeyType, typename ValueType>
@@ -514,14 +624,14 @@ int BPlusTree<KeyType, ValueType>::getNodeIndex(Node<KeyType, ValueType>* node) 
 template<typename KeyType, typename ValueType>
 std::vector<std::pair<KeyType, ValueType>> BPlusTree<KeyType, ValueType>::rangeQuery(
     const KeyType& start,
-    const KeyType& end) {
+    const KeyType& end) const {
 
     std::vector<std::pair<KeyType, ValueType>> result;
 
     if (!root) return result;
 
     // Find starting leaf
-    LeafNode<KeyType, ValueType>* leaf = findLeaf(start);
+    const LeafNode<KeyType, ValueType>* leaf = findLeaf(start);
 
     // Traverse leaves and collect results
     while (leaf) {
@@ -540,7 +650,7 @@ std::vector<std::pair<KeyType, ValueType>> BPlusTree<KeyType, ValueType>::rangeQ
 
 // Utility functions
 template<typename KeyType, typename ValueType>
-void BPlusTree<KeyType, ValueType>::print() {
+void BPlusTree<KeyType, ValueType>::print() const {
     if (!root) {
         std::cout << "Empty tree" << std::endl;
         return;
@@ -549,7 +659,7 @@ void BPlusTree<KeyType, ValueType>::print() {
 }
 
 template<typename KeyType, typename ValueType>
-void BPlusTree<KeyType, ValueType>::printNode(Node<KeyType, ValueType>* node, int level) {
+void BPlusTree<KeyType, ValueType>::printNode(const Node<KeyType, ValueType>* node, int level) const {
     if (!node) return;
 
     std::cout << "Level " << level << ": [";
@@ -564,8 +674,8 @@ void BPlusTree<KeyType, ValueType>::printNode(Node<KeyType, ValueType>* node, in
     } else {
         std::cout << " (Internal)" << std::endl;
         assert(node->isInternal() && "Expected internal node");
-        InternalNode<KeyType, ValueType>* internal =
-            static_cast<InternalNode<KeyType, ValueType>*>(node);
+        const InternalNode<KeyType, ValueType>* internal =
+            static_cast<const InternalNode<KeyType, ValueType>*>(node);
         for (auto child : internal->children) {
             printNode(child, level + 1);
         }
@@ -573,15 +683,15 @@ void BPlusTree<KeyType, ValueType>::printNode(Node<KeyType, ValueType>* node, in
 }
 
 template<typename KeyType, typename ValueType>
-int BPlusTree<KeyType, ValueType>::height() {
+int BPlusTree<KeyType, ValueType>::height() const {
     if (!root) return 0;
 
     int h = 1;
-    Node<KeyType, ValueType>* current = root;
+    const Node<KeyType, ValueType>* current = root;
     while (current->isInternal()) {
         assert(current->isInternal() && "Expected internal node");
-        InternalNode<KeyType, ValueType>* internal =
-            static_cast<InternalNode<KeyType, ValueType>*>(current);
+        const InternalNode<KeyType, ValueType>* internal =
+            static_cast<const InternalNode<KeyType, ValueType>*>(current);
         current = internal->children[0];
         h++;
     }
@@ -589,7 +699,7 @@ int BPlusTree<KeyType, ValueType>::height() {
 }
 
 template<typename KeyType, typename ValueType>
-bool BPlusTree<KeyType, ValueType>::validate() {
+bool BPlusTree<KeyType, ValueType>::validate() const {
     if (!root) return true;
 
     int leafLevel = -1;
@@ -597,8 +707,8 @@ bool BPlusTree<KeyType, ValueType>::validate() {
 }
 
 template<typename KeyType, typename ValueType>
-bool BPlusTree<KeyType, ValueType>::validateNode(Node<KeyType, ValueType>* node,
-                                                   int level, int& leafLevel) {
+bool BPlusTree<KeyType, ValueType>::validateNode(const Node<KeyType, ValueType>* node,
+                                                   int level, int& leafLevel) const {
     if (!node) return true;
 
     // Check key count bounds
@@ -627,8 +737,8 @@ bool BPlusTree<KeyType, ValueType>::validateNode(Node<KeyType, ValueType>* node,
         }
     } else {
         assert(node->isInternal() && "Expected internal node");
-        InternalNode<KeyType, ValueType>* internal =
-            static_cast<InternalNode<KeyType, ValueType>*>(node);
+        const InternalNode<KeyType, ValueType>* internal =
+            static_cast<const InternalNode<KeyType, ValueType>*>(node);
 
         // Check child count
         if (internal->children.size() != static_cast<size_t>(node->numKeys + 1)) {

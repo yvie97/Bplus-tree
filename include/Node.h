@@ -143,8 +143,20 @@ public:
 
     // Insert key-value pair at specified position
     void insertAt(int pos, const KeyType& key, const ValueType& value) {
+        // Reserve space first to reduce chance of allocation failure mid-operation
+        this->keys.reserve(this->numKeys + 1);
+        values.reserve(this->numKeys + 1);
         this->insertKeyAt(pos, key);
         values.insert(values.begin() + pos, value);
+    }
+
+    // Move-based insert for better performance and exception safety
+    void insertAt(int pos, KeyType&& key, ValueType&& value) {
+        this->keys.reserve(this->numKeys + 1);
+        values.reserve(this->numKeys + 1);
+        this->keys.insert(this->keys.begin() + pos, std::move(key));
+        this->numKeys++;
+        values.insert(values.begin() + pos, std::move(value));
     }
 
     // Remove key-value pair at specified position
