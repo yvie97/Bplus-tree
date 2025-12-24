@@ -8,6 +8,7 @@
 #include <utility>
 #include <algorithm>
 #include <queue>
+#include <cassert>
 
 namespace bptree {
 
@@ -26,7 +27,7 @@ private:
     void insertIntoParent(Node<KeyType, ValueType>* left, const KeyType& key,
                           Node<KeyType, ValueType>* right);
 
-    void deleteEntry(Node<KeyType, ValueType>* node, const KeyType& key);
+    void deleteEntry(Node<KeyType, ValueType>* node);
     void mergeNodes(Node<KeyType, ValueType>* node, Node<KeyType, ValueType>* sibling,
                     int parentIndex, bool isLeftSibling);
     void redistributeNodes(Node<KeyType, ValueType>* node, Node<KeyType, ValueType>* sibling,
@@ -83,6 +84,7 @@ void BPlusTree<KeyType, ValueType>::destroyTree(Node<KeyType, ValueType>* node) 
     if (!node) return;
 
     if (node->isInternal()) {
+        assert(node->isInternal() && "Expected internal node");
         InternalNode<KeyType, ValueType>* internal =
             static_cast<InternalNode<KeyType, ValueType>*>(node);
         for (auto child : internal->children) {
@@ -106,12 +108,14 @@ LeafNode<KeyType, ValueType>* BPlusTree<KeyType, ValueType>::findLeaf(const KeyT
     Node<KeyType, ValueType>* current = root;
 
     while (current && current->isInternal()) {
+        assert(current->isInternal() && "Expected internal node");
         InternalNode<KeyType, ValueType>* internal =
             static_cast<InternalNode<KeyType, ValueType>*>(current);
         int index = internal->findChildIndex(key);
         current = internal->children[index];
     }
 
+    assert(current == nullptr || current->isLeaf() && "Expected leaf node or null");
     return static_cast<LeafNode<KeyType, ValueType>*>(current);
 }
 
@@ -121,6 +125,7 @@ void BPlusTree<KeyType, ValueType>::insert(const KeyType& key, const ValueType& 
     // Empty tree case
     if (!root) {
         root = new LeafNode<KeyType, ValueType>(maxKeys);
+        assert(root->isLeaf() && "Root should be a leaf node");
         LeafNode<KeyType, ValueType>* leaf = static_cast<LeafNode<KeyType, ValueType>*>(root);
         leaf->insertAt(0, key, value);
         return;
@@ -278,18 +283,18 @@ bool BPlusTree<KeyType, ValueType>::remove(const KeyType& key) {
     }
 
     if (leaf->isUnderflow(minKeys)) {
-        deleteEntry(leaf, key);
+        deleteEntry(leaf);
     }
 
     return true;
 }
 
 template<typename KeyType, typename ValueType>
-void BPlusTree<KeyType, ValueType>::deleteEntry(Node<KeyType, ValueType>* node,
-                                                  const KeyType& key) {
+void BPlusTree<KeyType, ValueType>::deleteEntry(Node<KeyType, ValueType>* node) {
     if (node == root) {
         if (node->numKeys == 0) {
             if (node->isInternal()) {
+                assert(node->isInternal() && "Expected internal node");
                 InternalNode<KeyType, ValueType>* internal =
                     static_cast<InternalNode<KeyType, ValueType>*>(node);
                 if (!internal->children.empty()) {
@@ -306,9 +311,17 @@ void BPlusTree<KeyType, ValueType>::deleteEntry(Node<KeyType, ValueType>* node,
         return;
     }
 
+    assert(node->parent && "Non-root node must have a parent");
+    assert(node->parent->isInternal() && "Parent must be an internal node");
     InternalNode<KeyType, ValueType>* parent =
         static_cast<InternalNode<KeyType, ValueType>*>(node->parent);
     int nodeIndex = getNodeIndex(node);
+
+    // Verify node was found in parent's children
+    if (nodeIndex == -1) {
+        std::cerr << "Error: Node not found in parent's children list" << std::endl;
+        return;
+    }
 
     // Try to borrow from sibling
     if (nodeIndex > 0) {
@@ -319,7 +332,7 @@ void BPlusTree<KeyType, ValueType>::deleteEntry(Node<KeyType, ValueType>* node,
         }
     }
 
-    if (nodeIndex < parent->children.size() - 1) {
+    if (static_cast<size_t>(nodeIndex) < parent->children.size() - 1) {
         Node<KeyType, ValueType>* rightSibling = parent->children[nodeIndex + 1];
         if (rightSibling->numKeys > minKeys) {
             redistributeNodes(node, rightSibling, nodeIndex, false);
@@ -342,9 +355,10 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
     Node<KeyType, ValueType>* left,
     Node<KeyType, ValueType>* right,
     int parentIndex,
-    bool isLeftSibling) {
+    bool /* isLeftSibling */) {
 
     if (left->isLeaf()) {
+        assert(left->isLeaf() && right->isLeaf() && "Both nodes must be leaves");
         LeafNode<KeyType, ValueType>* leftLeaf =
             static_cast<LeafNode<KeyType, ValueType>*>(left);
         LeafNode<KeyType, ValueType>* rightLeaf =
@@ -365,12 +379,14 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
 
         delete rightLeaf;
     } else {
+        assert(left->isInternal() && right->isInternal() && "Both nodes must be internal");
         InternalNode<KeyType, ValueType>* leftInternal =
             static_cast<InternalNode<KeyType, ValueType>*>(left);
         InternalNode<KeyType, ValueType>* rightInternal =
             static_cast<InternalNode<KeyType, ValueType>*>(right);
 
         // Pull down the separator key from parent
+        assert(left->parent && left->parent->isInternal() && "Parent must be internal");
         InternalNode<KeyType, ValueType>* parent =
             static_cast<InternalNode<KeyType, ValueType>*>(left->parent);
         leftInternal->keys.push_back(parent->keys[parentIndex]);
@@ -391,6 +407,7 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
     }
 
     // Remove separator key from parent
+    assert(left->parent && left->parent->isInternal() && "Parent must be internal");
     InternalNode<KeyType, ValueType>* parent =
         static_cast<InternalNode<KeyType, ValueType>*>(left->parent);
     parent->removeKeyAt(parentIndex);
@@ -398,7 +415,7 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
 
     // Handle parent underflow
     if (parent->isUnderflow(minKeys)) {
-        deleteEntry(parent, parent->numKeys > 0 ? parent->keys[0] : KeyType());
+        deleteEntry(parent);
     }
 }
 
@@ -409,10 +426,12 @@ void BPlusTree<KeyType, ValueType>::redistributeNodes(
     int parentIndex,
     bool isLeftSibling) {
 
+    assert(node->parent && node->parent->isInternal() && "Parent must be internal");
     InternalNode<KeyType, ValueType>* parent =
         static_cast<InternalNode<KeyType, ValueType>*>(node->parent);
 
     if (node->isLeaf()) {
+        assert(node->isLeaf() && sibling->isLeaf() && "Both nodes must be leaves");
         LeafNode<KeyType, ValueType>* leaf = static_cast<LeafNode<KeyType, ValueType>*>(node);
         LeafNode<KeyType, ValueType>* siblingLeaf =
             static_cast<LeafNode<KeyType, ValueType>*>(sibling);
@@ -441,6 +460,7 @@ void BPlusTree<KeyType, ValueType>::redistributeNodes(
             parent->keys[parentIndex] = siblingLeaf->keys[0];
         }
     } else {
+        assert(node->isInternal() && sibling->isInternal() && "Both nodes must be internal");
         InternalNode<KeyType, ValueType>* internal =
             static_cast<InternalNode<KeyType, ValueType>*>(node);
         InternalNode<KeyType, ValueType>* siblingInternal =
@@ -543,6 +563,7 @@ void BPlusTree<KeyType, ValueType>::printNode(Node<KeyType, ValueType>* node, in
         std::cout << " (Leaf)" << std::endl;
     } else {
         std::cout << " (Internal)" << std::endl;
+        assert(node->isInternal() && "Expected internal node");
         InternalNode<KeyType, ValueType>* internal =
             static_cast<InternalNode<KeyType, ValueType>*>(node);
         for (auto child : internal->children) {
@@ -558,6 +579,7 @@ int BPlusTree<KeyType, ValueType>::height() {
     int h = 1;
     Node<KeyType, ValueType>* current = root;
     while (current->isInternal()) {
+        assert(current->isInternal() && "Expected internal node");
         InternalNode<KeyType, ValueType>* internal =
             static_cast<InternalNode<KeyType, ValueType>*>(current);
         current = internal->children[0];
@@ -604,11 +626,12 @@ bool BPlusTree<KeyType, ValueType>::validateNode(Node<KeyType, ValueType>* node,
             return false;
         }
     } else {
+        assert(node->isInternal() && "Expected internal node");
         InternalNode<KeyType, ValueType>* internal =
             static_cast<InternalNode<KeyType, ValueType>*>(node);
 
         // Check child count
-        if (internal->children.size() != node->numKeys + 1) {
+        if (internal->children.size() != static_cast<size_t>(node->numKeys + 1)) {
             std::cerr << "Invalid child count at level " << level << std::endl;
             return false;
         }
