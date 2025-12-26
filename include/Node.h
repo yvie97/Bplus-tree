@@ -30,7 +30,8 @@ public:
 
     Node(NodeType t, int maxK)
         : type(t), numKeys(0), parent(nullptr), maxKeys(maxK) {
-        keys.reserve(maxK);
+        // Pre-allocate to maxKeys + 1 to handle overflow during splits
+        keys.resize(maxK + 1);
     }
 
     virtual ~Node() = default;
@@ -72,15 +73,22 @@ public:
         return result;
     }
 
-    // Insert a key at the specified position
+    // Insert a key at the specified position using manual shifting
     void insertKeyAt(int pos, const KeyType& key) {
-        keys.insert(keys.begin() + pos, key);
+        // Shift elements to the right manually - O(n) but with better cache performance
+        for (int i = numKeys; i > pos; --i) {
+            keys[i] = std::move(keys[i - 1]);
+        }
+        keys[pos] = key;
         numKeys++;
     }
 
-    // Remove key at specified position
+    // Remove key at specified position using manual shifting
     void removeKeyAt(int pos) {
-        keys.erase(keys.begin() + pos);
+        // Shift elements to the left manually - O(n) but with better cache performance
+        for (int i = pos; i < numKeys - 1; ++i) {
+            keys[i] = std::move(keys[i + 1]);
+        }
         numKeys--;
     }
 };
@@ -93,24 +101,43 @@ public:
 
     InternalNode(int maxKeys)
         : Node<KeyType, ValueType>(NodeType::INTERNAL, maxKeys) {
-        children.reserve(maxKeys + 1);
+        // Pre-allocate to maxKeys + 3 to handle overflow during splits
+        // +3 because: during insertIntoParent, we first increment numKeys (making it maxKeys+1),
+        // then call insertChildAt which needs numKeys+1 children (maxKeys+2),
+        // and needs to shift one more position (maxKeys+3)
+        // Initialize all pointers to nullptr
+        children.resize(maxKeys + 3, nullptr);
     }
 
     ~InternalNode() override {
         // Don't delete children here - tree destructor handles it
     }
 
-    // Insert a child at the specified position
+    // Insert a child at the specified position using manual shifting
     void insertChildAt(int pos, Node<KeyType, ValueType>* child) {
-        children.insert(children.begin() + pos, child);
+        // Determine the current number of children
+        int numChildren = this->numKeys + 1;
+
+        // Shift children to the right manually
+        for (int i = numChildren; i > pos; --i) {
+            children[i] = children[i - 1];
+        }
+        children[pos] = child;
         if (child) {
             child->parent = this;
         }
     }
 
-    // Remove child at specified position
+    // Remove child at specified position using manual shifting
     void removeChildAt(int pos) {
-        children.erase(children.begin() + pos);
+        // Determine the current number of children
+        int numChildren = this->numKeys + 1;
+
+        // Shift children to the left manually
+        for (int i = pos; i < numChildren - 1; ++i) {
+            children[i] = children[i + 1];
+        }
+        children[numChildren - 1] = nullptr;
     }
 
     // Find which child pointer to follow for a given key
@@ -136,33 +163,55 @@ public:
     LeafNode(int maxKeys)
         : Node<KeyType, ValueType>(NodeType::LEAF, maxKeys),
           next(nullptr), prev(nullptr) {
-        values.reserve(maxKeys);
+        // Pre-allocate to maxKeys + 1 to handle overflow during splits
+        values.resize(maxKeys + 1);
     }
 
     ~LeafNode() override = default;
 
-    // Insert key-value pair at specified position
+    // Insert key-value pair at specified position using manual shifting
     void insertAt(int pos, const KeyType& key, const ValueType& value) {
-        // Reserve space first to reduce chance of allocation failure mid-operation
-        this->keys.reserve(this->numKeys + 1);
-        values.reserve(this->numKeys + 1);
-        this->insertKeyAt(pos, key);
-        values.insert(values.begin() + pos, value);
+        // Shift keys manually
+        for (int i = this->numKeys; i > pos; --i) {
+            this->keys[i] = std::move(this->keys[i - 1]);
+        }
+        this->keys[pos] = key;
+
+        // Shift values manually
+        for (int i = this->numKeys; i > pos; --i) {
+            values[i] = std::move(values[i - 1]);
+        }
+        values[pos] = value;
+
+        this->numKeys++;
     }
 
     // Move-based insert for better performance and exception safety
     void insertAt(int pos, KeyType&& key, ValueType&& value) {
-        this->keys.reserve(this->numKeys + 1);
-        values.reserve(this->numKeys + 1);
-        this->keys.insert(this->keys.begin() + pos, std::move(key));
+        // Shift keys manually
+        for (int i = this->numKeys; i > pos; --i) {
+            this->keys[i] = std::move(this->keys[i - 1]);
+        }
+        this->keys[pos] = std::move(key);
+
+        // Shift values manually
+        for (int i = this->numKeys; i > pos; --i) {
+            values[i] = std::move(values[i - 1]);
+        }
+        values[pos] = std::move(value);
+
         this->numKeys++;
-        values.insert(values.begin() + pos, std::move(value));
     }
 
-    // Remove key-value pair at specified position
+    // Remove key-value pair at specified position using manual shifting
     void removeAt(int pos) {
+        // Shift keys (using parent class method)
         this->removeKeyAt(pos);
-        values.erase(values.begin() + pos);
+
+        // Shift values manually
+        for (int i = pos; i < this->numKeys; ++i) {
+            values[i] = std::move(values[i + 1]);
+        }
     }
 
     // Find value for a given key

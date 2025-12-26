@@ -148,8 +148,12 @@ void BPlusTree<KeyType, ValueType>::destroyTree(Node<KeyType, ValueType>* node) 
         assert(node->isInternal() && "Expected internal node");
         InternalNode<KeyType, ValueType>* internal =
             static_cast<InternalNode<KeyType, ValueType>*>(node);
-        for (auto child : internal->children) {
-            destroyTree(child);
+        // Only destroy actual children (numKeys + 1)
+        int numChildren = node->numKeys + 1;
+        for (int i = 0; i < numChildren; i++) {
+            if (internal->children[i]) {
+                destroyTree(internal->children[i]);
+            }
         }
     }
     delete node;
@@ -239,21 +243,16 @@ void BPlusTree<KeyType, ValueType>::splitLeaf(LeafNode<KeyType, ValueType>* leaf
         // Calculate split point
         int splitPoint = (maxKeys + 1) / 2;
 
-        // Reserve space to minimize allocation failures
-        newLeaf->keys.reserve(leaf->numKeys - splitPoint);
-        newLeaf->values.reserve(leaf->numKeys - splitPoint);
-
-        // Move second half of keys and values to new leaf
-        // Using move semantics where possible for better performance
+        // Move second half of keys and values to new leaf using direct indexing
+        int newLeafIndex = 0;
         for (int i = splitPoint; i < leaf->numKeys; i++) {
-            newLeaf->keys.push_back(std::move(leaf->keys[i]));
-            newLeaf->values.push_back(std::move(leaf->values[i]));
-            newLeaf->numKeys++;
+            newLeaf->keys[newLeafIndex] = std::move(leaf->keys[i]);
+            newLeaf->values[newLeafIndex] = std::move(leaf->values[i]);
+            newLeafIndex++;
         }
+        newLeaf->numKeys = newLeafIndex;
 
-        // Adjust original leaf
-        leaf->keys.resize(splitPoint);
-        leaf->values.resize(splitPoint);
+        // Adjust original leaf - just update count, no need to resize
         leaf->numKeys = splitPoint;
 
         // Update linked list
@@ -279,48 +278,55 @@ void BPlusTree<KeyType, ValueType>::splitInternal(InternalNode<KeyType, ValueTyp
     // Create new internal node
     InternalNode<KeyType, ValueType>* newNode = nullptr;
 
+    // Calculate split point and save original children count (needed for exception handling)
+    int splitPoint = (maxKeys + 1) / 2;
+    int numOriginalChildren = node->numKeys + 1;
+
     try {
         newNode = new InternalNode<KeyType, ValueType>(maxKeys);
-
-        // Calculate split point
-        int splitPoint = (maxKeys + 1) / 2;
 
         // Key to promote to parent
         KeyType promoteKey = node->keys[splitPoint];
 
-        // Reserve space to minimize allocation failures
-        newNode->keys.reserve(node->numKeys - splitPoint - 1);
-        newNode->children.reserve(node->children.size() - splitPoint - 1);
-
-        // Move second half to new node
+        // Move second half of keys to new node using direct indexing
+        int newNodeKeyIndex = 0;
         for (int i = splitPoint + 1; i < node->numKeys; i++) {
-            newNode->keys.push_back(std::move(node->keys[i]));
-            newNode->numKeys++;
+            newNode->keys[newNodeKeyIndex] = std::move(node->keys[i]);
+            newNodeKeyIndex++;
+        }
+        newNode->numKeys = newNodeKeyIndex;
+
+        // Move children using direct indexing
+        int newNodeChildIndex = 0;
+        for (int i = splitPoint + 1; i < numOriginalChildren; i++) {
+            newNode->children[newNodeChildIndex] = node->children[i];
+            if (node->children[i]) {
+                node->children[i]->parent = newNode;
+            }
+            node->children[i] = nullptr;  // Nullify after moving to prevent double-deletion
+            newNodeChildIndex++;
         }
 
-        // Move children
-        for (size_t i = splitPoint + 1; i < node->children.size(); i++) {
-            newNode->children.push_back(node->children[i]);
-            node->children[i]->parent = newNode;
-        }
-
-        // Adjust original node
-        node->keys.resize(splitPoint);
-        node->children.resize(splitPoint + 1);
+        // Adjust original node - just update count
         node->numKeys = splitPoint;
 
         // Insert into parent
         insertIntoParent(node, promoteKey, newNode);
     } catch (...) {
         // If an exception occurs, clean up the new node
-        // Note: children have already been transferred, so we need to restore them
+        // Note: children have already been transferred and nullified, so we need to restore them
         if (newNode) {
-            // Restore children back to original node before deleting
-            for (auto child : newNode->children) {
-                if (child) {
-                    child->parent = node;
+            // Restore children back to original node
+            int numNewChildren = newNode->numKeys + 1;
+            int originalIndex = splitPoint + 1;
+            for (int i = 0; i < numNewChildren; i++) {
+                if (newNode->children[i]) {
+                    newNode->children[i]->parent = node;
+                    node->children[originalIndex + i] = newNode->children[i];  // Restore pointer
                 }
             }
+            // Restore original numKeys
+            node->numKeys = numOriginalChildren - 1;
             delete newNode;
         }
         throw; // Re-throw the exception
@@ -337,10 +343,10 @@ void BPlusTree<KeyType, ValueType>::insertIntoParent(
     if (left->parent == nullptr) {
         InternalNode<KeyType, ValueType>* newRoot =
             new InternalNode<KeyType, ValueType>(maxKeys);
-        newRoot->keys.push_back(key);
+        newRoot->keys[0] = key;
         newRoot->numKeys = 1;
-        newRoot->children.push_back(left);
-        newRoot->children.push_back(right);
+        newRoot->children[0] = left;
+        newRoot->children[1] = right;
         left->parent = newRoot;
         right->parent = newRoot;
         root = newRoot;
@@ -367,6 +373,7 @@ bool BPlusTree<KeyType, ValueType>::remove(const KeyType& key) {
     if (!root) return false;
 
     LeafNode<KeyType, ValueType>* leaf = findLeaf(key);
+    if (!leaf) return false;  // Leaf not found (tree structure issue)
 
     // Find the key
     int pos = -1;
@@ -436,14 +443,19 @@ void BPlusTree<KeyType, ValueType>::deleteEntry(Node<KeyType, ValueType>* node) 
     // Try to borrow from sibling
     if (nodeIndex > 0) {
         Node<KeyType, ValueType>* leftSibling = parent->children[nodeIndex - 1];
+        // Add assertion to ensure sibling is valid
+        assert(leftSibling && "Left sibling should not be null");
         if (leftSibling->numKeys > minKeys) {
             redistributeNodes(node, leftSibling, nodeIndex - 1, true);
             return;
         }
     }
 
-    if (static_cast<size_t>(nodeIndex) < parent->children.size() - 1) {
+    // Check if there's a right sibling (numChildren = numKeys + 1)
+    if (nodeIndex < parent->numKeys) {
         Node<KeyType, ValueType>* rightSibling = parent->children[nodeIndex + 1];
+        // Add assertion to ensure sibling is valid
+        assert(rightSibling && "Right sibling should not be null");
         if (rightSibling->numKeys > minKeys) {
             redistributeNodes(node, rightSibling, nodeIndex, false);
             return;
@@ -453,9 +465,11 @@ void BPlusTree<KeyType, ValueType>::deleteEntry(Node<KeyType, ValueType>* node) 
     // Merge with sibling
     if (nodeIndex > 0) {
         Node<KeyType, ValueType>* leftSibling = parent->children[nodeIndex - 1];
+        assert(leftSibling && "Left sibling should not be null");
         mergeNodes(leftSibling, node, nodeIndex - 1, true);
     } else {
         Node<KeyType, ValueType>* rightSibling = parent->children[nodeIndex + 1];
+        assert(rightSibling && "Right sibling should not be null");
         mergeNodes(node, rightSibling, nodeIndex, false);
     }
 }
@@ -474,12 +488,14 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
         LeafNode<KeyType, ValueType>* rightLeaf =
             static_cast<LeafNode<KeyType, ValueType>*>(right);
 
-        // Move all from right to left
+        // Move all from right to left using direct indexing
+        int leftIndex = leftLeaf->numKeys;
         for (int i = 0; i < rightLeaf->numKeys; i++) {
-            leftLeaf->keys.push_back(rightLeaf->keys[i]);
-            leftLeaf->values.push_back(rightLeaf->values[i]);
-            leftLeaf->numKeys++;
+            leftLeaf->keys[leftIndex] = std::move(rightLeaf->keys[i]);
+            leftLeaf->values[leftIndex] = std::move(rightLeaf->values[i]);
+            leftIndex++;
         }
+        leftLeaf->numKeys = leftIndex;
 
         // Update linked list
         leftLeaf->next = rightLeaf->next;
@@ -495,33 +511,46 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
         InternalNode<KeyType, ValueType>* rightInternal =
             static_cast<InternalNode<KeyType, ValueType>*>(right);
 
+        // Save original number of children in left (before we modify numKeys)
+        int originalLeftChildren = leftInternal->numKeys + 1;
+
         // Pull down the separator key from parent
         assert(left->parent && left->parent->isInternal() && "Parent must be internal");
         InternalNode<KeyType, ValueType>* parent =
             static_cast<InternalNode<KeyType, ValueType>*>(left->parent);
-        leftInternal->keys.push_back(parent->keys[parentIndex]);
+        leftInternal->keys[leftInternal->numKeys] = parent->keys[parentIndex];
         leftInternal->numKeys++;
 
-        // Move all from right to left
+        // Move all keys from right to left using direct indexing
+        int leftKeyIndex = leftInternal->numKeys;
         for (int i = 0; i < rightInternal->numKeys; i++) {
-            leftInternal->keys.push_back(rightInternal->keys[i]);
-            leftInternal->numKeys++;
+            leftInternal->keys[leftKeyIndex] = std::move(rightInternal->keys[i]);
+            leftKeyIndex++;
         }
+        leftInternal->numKeys = leftKeyIndex;
 
-        for (auto child : rightInternal->children) {
-            leftInternal->children.push_back(child);
-            child->parent = leftInternal;
+        // Move all children from right to left using direct indexing
+        // Children from right should start at originalLeftChildren index
+        int leftChildIndex = originalLeftChildren;
+        int numRightChildren = rightInternal->numKeys + 1;
+        for (int i = 0; i < numRightChildren; i++) {
+            leftInternal->children[leftChildIndex] = rightInternal->children[i];
+            if (rightInternal->children[i]) {
+                rightInternal->children[i]->parent = leftInternal;
+            }
+            leftChildIndex++;
         }
 
         delete rightInternal;
     }
 
-    // Remove separator key from parent
+    // Remove separator key and child from parent
+    // IMPORTANT: Remove child BEFORE removing key, because removeChildAt uses numKeys
     assert(left->parent && left->parent->isInternal() && "Parent must be internal");
     InternalNode<KeyType, ValueType>* parent =
         static_cast<InternalNode<KeyType, ValueType>*>(left->parent);
-    parent->removeKeyAt(parentIndex);
     parent->removeChildAt(parentIndex + 1);
+    parent->removeKeyAt(parentIndex);
 
     // Handle parent underflow
     if (parent->isUnderflow(minKeys)) {
@@ -547,24 +576,29 @@ void BPlusTree<KeyType, ValueType>::redistributeNodes(
             static_cast<LeafNode<KeyType, ValueType>*>(sibling);
 
         if (isLeftSibling) {
-            // Borrow from left sibling
-            leaf->keys.insert(leaf->keys.begin(), siblingLeaf->keys.back());
-            leaf->values.insert(leaf->values.begin(), siblingLeaf->values.back());
+            // Borrow from left sibling - shift right and insert at beginning
+            for (int i = leaf->numKeys; i > 0; --i) {
+                leaf->keys[i] = std::move(leaf->keys[i - 1]);
+                leaf->values[i] = std::move(leaf->values[i - 1]);
+            }
+            leaf->keys[0] = std::move(siblingLeaf->keys[siblingLeaf->numKeys - 1]);
+            leaf->values[0] = std::move(siblingLeaf->values[siblingLeaf->numKeys - 1]);
             leaf->numKeys++;
 
-            siblingLeaf->keys.pop_back();
-            siblingLeaf->values.pop_back();
             siblingLeaf->numKeys--;
 
             parent->keys[parentIndex] = leaf->keys[0];
         } else {
-            // Borrow from right sibling
-            leaf->keys.push_back(siblingLeaf->keys[0]);
-            leaf->values.push_back(siblingLeaf->values[0]);
+            // Borrow from right sibling - append to end
+            leaf->keys[leaf->numKeys] = std::move(siblingLeaf->keys[0]);
+            leaf->values[leaf->numKeys] = std::move(siblingLeaf->values[0]);
             leaf->numKeys++;
 
-            siblingLeaf->keys.erase(siblingLeaf->keys.begin());
-            siblingLeaf->values.erase(siblingLeaf->values.begin());
+            // Shift left in sibling
+            for (int i = 0; i < siblingLeaf->numKeys - 1; ++i) {
+                siblingLeaf->keys[i] = std::move(siblingLeaf->keys[i + 1]);
+                siblingLeaf->values[i] = std::move(siblingLeaf->values[i + 1]);
+            }
             siblingLeaf->numKeys--;
 
             parent->keys[parentIndex] = siblingLeaf->keys[0];
@@ -577,31 +611,43 @@ void BPlusTree<KeyType, ValueType>::redistributeNodes(
             static_cast<InternalNode<KeyType, ValueType>*>(sibling);
 
         if (isLeftSibling) {
-            // Borrow from left sibling
-            internal->keys.insert(internal->keys.begin(), parent->keys[parentIndex]);
+            // Borrow from left sibling - shift keys right
+            for (int i = internal->numKeys; i > 0; --i) {
+                internal->keys[i] = std::move(internal->keys[i - 1]);
+            }
+            internal->keys[0] = parent->keys[parentIndex];
             internal->numKeys++;
 
-            internal->children.insert(internal->children.begin(),
-                                     siblingInternal->children.back());
-            siblingInternal->children.back()->parent = internal;
+            // Shift children right
+            int numChildren = internal->numKeys;
+            for (int i = numChildren; i > 0; --i) {
+                internal->children[i] = internal->children[i - 1];
+            }
+            internal->children[0] = siblingInternal->children[siblingInternal->numKeys];
+            internal->children[0]->parent = internal;
 
-            parent->keys[parentIndex] = siblingInternal->keys.back();
+            parent->keys[parentIndex] = siblingInternal->keys[siblingInternal->numKeys - 1];
 
-            siblingInternal->keys.pop_back();
-            siblingInternal->children.pop_back();
             siblingInternal->numKeys--;
         } else {
-            // Borrow from right sibling
-            internal->keys.push_back(parent->keys[parentIndex]);
+            // Borrow from right sibling - append to end
+            internal->keys[internal->numKeys] = parent->keys[parentIndex];
             internal->numKeys++;
 
-            internal->children.push_back(siblingInternal->children[0]);
+            internal->children[internal->numKeys] = siblingInternal->children[0];
             siblingInternal->children[0]->parent = internal;
 
             parent->keys[parentIndex] = siblingInternal->keys[0];
 
-            siblingInternal->keys.erase(siblingInternal->keys.begin());
-            siblingInternal->children.erase(siblingInternal->children.begin());
+            // Shift keys left in sibling
+            for (int i = 0; i < siblingInternal->numKeys - 1; ++i) {
+                siblingInternal->keys[i] = std::move(siblingInternal->keys[i + 1]);
+            }
+            // Shift children left in sibling
+            int numSiblingChildren = siblingInternal->numKeys + 1;
+            for (int i = 0; i < numSiblingChildren - 1; ++i) {
+                siblingInternal->children[i] = siblingInternal->children[i + 1];
+            }
             siblingInternal->numKeys--;
         }
     }
@@ -612,7 +658,9 @@ int BPlusTree<KeyType, ValueType>::getNodeIndex(Node<KeyType, ValueType>* node) 
     InternalNode<KeyType, ValueType>* parent =
         static_cast<InternalNode<KeyType, ValueType>*>(node->parent);
 
-    for (size_t i = 0; i < parent->children.size(); i++) {
+    // Number of children = numKeys + 1
+    int numChildren = parent->numKeys + 1;
+    for (int i = 0; i < numChildren; i++) {
         if (parent->children[i] == node) {
             return i;
         }
@@ -676,8 +724,10 @@ void BPlusTree<KeyType, ValueType>::printNode(const Node<KeyType, ValueType>* no
         assert(node->isInternal() && "Expected internal node");
         const InternalNode<KeyType, ValueType>* internal =
             static_cast<const InternalNode<KeyType, ValueType>*>(node);
-        for (auto child : internal->children) {
-            printNode(child, level + 1);
+        // Only print actual children (numKeys + 1)
+        int numChildren = node->numKeys + 1;
+        for (int i = 0; i < numChildren; i++) {
+            printNode(internal->children[i], level + 1);
         }
     }
 }
@@ -740,15 +790,10 @@ bool BPlusTree<KeyType, ValueType>::validateNode(const Node<KeyType, ValueType>*
         const InternalNode<KeyType, ValueType>* internal =
             static_cast<const InternalNode<KeyType, ValueType>*>(node);
 
-        // Check child count
-        if (internal->children.size() != static_cast<size_t>(node->numKeys + 1)) {
-            std::cerr << "Invalid child count at level " << level << std::endl;
-            return false;
-        }
-
-        // Validate children
-        for (auto child : internal->children) {
-            if (!validateNode(child, level + 1, leafLevel)) {
+        // Validate children - only check actual children (numKeys + 1)
+        int numChildren = node->numKeys + 1;
+        for (int i = 0; i < numChildren; i++) {
+            if (!validateNode(internal->children[i], level + 1, leafLevel)) {
                 return false;
             }
         }
