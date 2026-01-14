@@ -13,7 +13,14 @@
 namespace bptree {
 
 /**
- * B+ Tree implementation with exception safety guarantees
+ * @brief B+ Tree implementation with exception safety guarantees
+ *
+ * A B+ Tree is a self-balancing tree data structure that maintains sorted data
+ * and allows searches, insertions, deletions, and sequential access in logarithmic time.
+ * All data is stored in leaf nodes, which are linked for efficient range queries.
+ *
+ * @tparam KeyType The type of keys stored in the tree. Must support comparison operators (<, >=, ==).
+ * @tparam ValueType The type of values associated with keys.
  *
  * Exception Safety Guarantees:
  * - Constructor: Strong guarantee - either succeeds or no tree is created
@@ -58,36 +65,170 @@ private:
     bool validateNode(const Node<KeyType, ValueType>* node, int level, int& leafLevel) const;
 
 public:
+    /**
+     * @brief Constructs a B+ Tree with the specified order
+     *
+     * @param order The order of the B+ tree (maximum number of children per node).
+     *              Must be at least MIN_ORDER (3). If a smaller value is provided,
+     *              MIN_ORDER will be used instead. Default is DEFAULT_ORDER (4).
+     *
+     * Time complexity: O(1)
+     * Space complexity: O(1)
+     * Exception safety: Strong guarantee
+     */
     explicit BPlusTree(int order = DEFAULT_ORDER);
+
+    /**
+     * @brief Destroys the B+ Tree and deallocates all nodes
+     *
+     * Time complexity: O(n) where n is the number of nodes
+     * Exception safety: No-throw guarantee (noexcept)
+     */
     ~BPlusTree();
 
-    // Disable copy (copying a tree is expensive and usually unintended)
+    /**
+     * @brief Deleted copy constructor
+     *
+     * Copying a tree is expensive and usually unintended. Use move semantics instead.
+     */
     BPlusTree(const BPlusTree&) = delete;
+
+    /**
+     * @brief Deleted copy assignment operator
+     *
+     * Copying a tree is expensive and usually unintended. Use move semantics instead.
+     */
     BPlusTree& operator=(const BPlusTree&) = delete;
 
-    // Enable move semantics for efficient transfer of ownership
+    /**
+     * @brief Move constructor for efficient transfer of ownership
+     *
+     * @param other The tree to move from. After the move, other will be in a valid
+     *              but empty state.
+     *
+     * Time complexity: O(1)
+     * Exception safety: No-throw guarantee (noexcept)
+     */
     BPlusTree(BPlusTree&& other) noexcept;
+
+    /**
+     * @brief Move assignment operator for efficient transfer of ownership
+     *
+     * @param other The tree to move from. After the move, other will be in a valid
+     *              but empty state.
+     * @return Reference to this tree
+     *
+     * Time complexity: O(n) where n is the number of nodes in the current tree (for cleanup)
+     * Exception safety: No-throw guarantee (noexcept)
+     */
     BPlusTree& operator=(BPlusTree&& other) noexcept;
 
-    // Core operations
+    /**
+     * @brief Searches for a key in the tree
+     *
+     * @param key The key to search for
+     * @param value Output parameter that will be set to the value if the key is found
+     * @return true if the key was found, false otherwise
+     *
+     * Time complexity: O(log n) where n is the number of keys
+     * Space complexity: O(1)
+     * Exception safety: No-throw guarantee if KeyType and ValueType operations don't throw
+     */
     bool search(const KeyType& key, ValueType& value) const;
 
-    // Insert operation with basic exception guarantee:
-    // If an exception is thrown (e.g., during memory allocation or copy),
-    // the tree structure remains valid but may be partially modified.
-    // For strong exception guarantee, consider using a copy-on-write approach.
+    /**
+     * @brief Inserts a key-value pair into the tree
+     *
+     * If the key already exists, its value is updated. Otherwise, a new entry is created.
+     * The tree automatically splits nodes when they become full to maintain balance.
+     *
+     * @param key The key to insert
+     * @param value The value to associate with the key
+     *
+     * Time complexity: O(log n) where n is the number of keys
+     * Space complexity: O(log n) for the recursion stack during splits
+     * Exception safety: Basic guarantee - tree remains valid but may be partially modified
+     *                   if KeyType or ValueType copy/move operations throw
+     */
     void insert(const KeyType& key, const ValueType& value);
 
+    /**
+     * @brief Removes a key from the tree
+     *
+     * If the key is found, it is removed and the tree is rebalanced if necessary
+     * through redistribution or merging of nodes.
+     *
+     * @param key The key to remove
+     * @return true if the key was found and removed, false if the key was not found
+     *
+     * Time complexity: O(log n) where n is the number of keys
+     * Space complexity: O(log n) for the recursion stack during rebalancing
+     * Exception safety: Basic guarantee - tree remains valid
+     */
     bool remove(const KeyType& key);
 
-    // Range query
+    /**
+     * @brief Performs a range query to retrieve all key-value pairs in a range
+     *
+     * Returns all entries with keys in the range [start, end] (inclusive).
+     * Efficiently uses the linked list structure of leaf nodes.
+     *
+     * @param start The lower bound of the range (inclusive)
+     * @param end The upper bound of the range (inclusive)
+     * @return A vector of key-value pairs in the specified range, sorted by key
+     *
+     * Time complexity: O(log n + k) where n is the number of keys and k is the result size
+     * Space complexity: O(k) for the result vector
+     * Exception safety: Strong guarantee - either returns results or leaves tree unchanged
+     */
     std::vector<std::pair<KeyType, ValueType>> rangeQuery(const KeyType& start,
                                                            const KeyType& end) const;
 
-    // Utility functions
+    /**
+     * @brief Prints the tree structure to standard output
+     *
+     * Displays the tree level by level, showing keys at each node and indicating
+     * whether each node is internal or a leaf.
+     *
+     * Time complexity: O(n) where n is the number of nodes
+     * Exception safety: Basic guarantee
+     */
     void print() const;
+
+    /**
+     * @brief Calculates the height of the tree
+     *
+     * @return The height of the tree (number of levels). Returns 0 for an empty tree.
+     *
+     * Time complexity: O(h) where h is the height
+     * Space complexity: O(1)
+     * Exception safety: No-throw guarantee
+     */
     int height() const;
+
+    /**
+     * @brief Validates the structural integrity of the tree
+     *
+     * Checks that:
+     * - All nodes (except root) have the correct number of keys
+     * - Keys within each node are sorted
+     * - All leaf nodes are at the same level
+     *
+     * @return true if the tree structure is valid, false otherwise
+     *
+     * Time complexity: O(n) where n is the number of nodes
+     * Exception safety: No-throw guarantee
+     */
     bool validate() const;
+
+    /**
+     * @brief Checks if the tree is empty
+     *
+     * @return true if the tree contains no keys, false otherwise
+     *
+     * Time complexity: O(1)
+     * Exception safety: No-throw guarantee
+     */
     bool isEmpty() const { return root == nullptr; }
 };
 
@@ -474,6 +615,29 @@ void BPlusTree<KeyType, ValueType>::deleteEntry(Node<KeyType, ValueType>* node) 
     }
 }
 
+/**
+ * @brief Merges two sibling nodes when redistribution is not possible
+ *
+ * This function combines all keys from the right node into the left node.
+ * For internal nodes, it also pulls down the separator key from the parent.
+ * After merging, the right node is deleted and the parent is updated.
+ *
+ * Algorithm steps:
+ * 1. For leaf nodes:
+ *    - Move all keys/values from right to left
+ *    - Update the linked list pointers
+ * 2. For internal nodes:
+ *    - Pull down separator key from parent
+ *    - Move all keys from right to left
+ *    - Move all child pointers and update their parent references
+ * 3. Update parent by removing the separator key and right child pointer
+ * 4. Recursively handle parent underflow if necessary
+ *
+ * @param left The left sibling node (will contain merged data)
+ * @param right The right sibling node (will be deleted)
+ * @param parentIndex Index of the separator key in the parent
+ * @param isLeftSibling Unused parameter (kept for consistency with redistributeNodes)
+ */
 template<typename KeyType, typename ValueType>
 void BPlusTree<KeyType, ValueType>::mergeNodes(
     Node<KeyType, ValueType>* left,
@@ -488,7 +652,8 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
         LeafNode<KeyType, ValueType>* rightLeaf =
             static_cast<LeafNode<KeyType, ValueType>*>(right);
 
-        // Move all from right to left using direct indexing
+        // Step 1: Move all keys/values from right leaf to left leaf
+        // Use direct array indexing for better performance than vector operations
         int leftIndex = leftLeaf->numKeys;
         for (int i = 0; i < rightLeaf->numKeys; i++) {
             leftLeaf->keys[leftIndex] = std::move(rightLeaf->keys[i]);
@@ -497,12 +662,14 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
         }
         leftLeaf->numKeys = leftIndex;
 
-        // Update linked list
+        // Step 2: Update the doubly-linked list to remove right leaf
+        // This maintains sequential access capability across leaf nodes
         leftLeaf->next = rightLeaf->next;
         if (rightLeaf->next) {
             rightLeaf->next->prev = leftLeaf;
         }
 
+        // Step 3: Delete the now-empty right leaf
         delete rightLeaf;
     } else {
         assert(left->isInternal() && right->isInternal() && "Both nodes must be internal");
@@ -511,17 +678,22 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
         InternalNode<KeyType, ValueType>* rightInternal =
             static_cast<InternalNode<KeyType, ValueType>*>(right);
 
-        // Save original number of children in left (before we modify numKeys)
+        // Step 1: Save the original number of children in left node
+        // This is needed to know where to insert the children from right node
+        // (must be saved before modifying numKeys)
         int originalLeftChildren = leftInternal->numKeys + 1;
 
-        // Pull down the separator key from parent
+        // Step 2: Pull down the separator key from parent
+        // In B+ trees, internal node merging requires bringing down the separator key
+        // Example: Parent has key K separating left [A,B] and right [D,E]
+        //          After merge: left becomes [A,B,K,D,E]
         assert(left->parent && left->parent->isInternal() && "Parent must be internal");
         InternalNode<KeyType, ValueType>* parent =
             static_cast<InternalNode<KeyType, ValueType>*>(left->parent);
         leftInternal->keys[leftInternal->numKeys] = parent->keys[parentIndex];
         leftInternal->numKeys++;
 
-        // Move all keys from right to left using direct indexing
+        // Step 3: Move all keys from right to left using direct array indexing
         int leftKeyIndex = leftInternal->numKeys;
         for (int i = 0; i < rightInternal->numKeys; i++) {
             leftInternal->keys[leftKeyIndex] = std::move(rightInternal->keys[i]);
@@ -529,35 +701,67 @@ void BPlusTree<KeyType, ValueType>::mergeNodes(
         }
         leftInternal->numKeys = leftKeyIndex;
 
-        // Move all children from right to left using direct indexing
-        // Children from right should start at originalLeftChildren index
+        // Step 4: Move all child pointers from right to left
+        // CRITICAL: Children from right must be appended after left's existing children
+        // Use originalLeftChildren (not numKeys+1) because numKeys has changed
         int leftChildIndex = originalLeftChildren;
         int numRightChildren = rightInternal->numKeys + 1;
         for (int i = 0; i < numRightChildren; i++) {
             leftInternal->children[leftChildIndex] = rightInternal->children[i];
+            // Update parent pointers to maintain tree structure
             if (rightInternal->children[i]) {
                 rightInternal->children[i]->parent = leftInternal;
             }
             leftChildIndex++;
         }
 
+        // Step 5: Delete the now-empty right internal node
         delete rightInternal;
     }
 
-    // Remove separator key and child from parent
-    // IMPORTANT: Remove child BEFORE removing key, because removeChildAt uses numKeys
+    // Step 6: Remove separator key and right child pointer from parent
+    // CRITICAL ORDER: Remove child BEFORE removing key!
+    // removeChildAt() uses numKeys to determine valid children range,
+    // so we must remove the child first to avoid incorrect bounds
     assert(left->parent && left->parent->isInternal() && "Parent must be internal");
     InternalNode<KeyType, ValueType>* parent =
         static_cast<InternalNode<KeyType, ValueType>*>(left->parent);
-    parent->removeChildAt(parentIndex + 1);
-    parent->removeKeyAt(parentIndex);
+    parent->removeChildAt(parentIndex + 1);  // Remove right child pointer
+    parent->removeKeyAt(parentIndex);         // Remove separator key
 
-    // Handle parent underflow
+    // Step 7: Recursively handle parent underflow if it now has too few keys
+    // This may cascade up the tree, potentially decreasing tree height
     if (parent->isUnderflow(minKeys)) {
         deleteEntry(parent);
     }
 }
 
+/**
+ * @brief Redistributes keys between a node and its sibling to fix underflow
+ *
+ * This function borrows a key from a sibling node that has more than the minimum
+ * number of keys. This is preferred over merging because it doesn't reduce the
+ * number of nodes in the tree. The parent's separator key is updated accordingly.
+ *
+ * Algorithm varies based on node type and sibling position:
+ *
+ * For LEAF nodes borrowing from LEFT sibling:
+ *   1. Shift all keys/values in node one position to the right
+ *   2. Move rightmost key/value from sibling to leftmost position in node
+ *   3. Update parent separator to be node's new first key
+ *
+ * For LEAF nodes borrowing from RIGHT sibling:
+ *   1. Move leftmost key/value from sibling to rightmost position in node
+ *   2. Shift all keys/values in sibling one position to the left
+ *   3. Update parent separator to be sibling's new first key
+ *
+ * For INTERNAL nodes, the process includes rotating the parent separator key.
+ *
+ * @param node The underflow node that needs a key
+ * @param sibling The sibling node with extra keys
+ * @param parentIndex Index of the separator key in the parent
+ * @param isLeftSibling True if borrowing from left sibling, false for right
+ */
 template<typename KeyType, typename ValueType>
 void BPlusTree<KeyType, ValueType>::redistributeNodes(
     Node<KeyType, ValueType>* node,
@@ -576,31 +780,43 @@ void BPlusTree<KeyType, ValueType>::redistributeNodes(
             static_cast<LeafNode<KeyType, ValueType>*>(sibling);
 
         if (isLeftSibling) {
-            // Borrow from left sibling - shift right and insert at beginning
+            // Borrowing from left sibling
+            // Example: left [10,20,30], node [50] -> left [10,20], node [30,50]
+
+            // Step 1: Shift all entries in node one position to the right
+            // to make room for the borrowed key at index 0
             for (int i = leaf->numKeys; i > 0; --i) {
                 leaf->keys[i] = std::move(leaf->keys[i - 1]);
                 leaf->values[i] = std::move(leaf->values[i - 1]);
             }
+
+            // Step 2: Move the rightmost entry from left sibling to node's first position
             leaf->keys[0] = std::move(siblingLeaf->keys[siblingLeaf->numKeys - 1]);
             leaf->values[0] = std::move(siblingLeaf->values[siblingLeaf->numKeys - 1]);
             leaf->numKeys++;
-
             siblingLeaf->numKeys--;
 
+            // Step 3: Update parent separator key to be node's new first key
+            // This maintains the invariant that parent key equals first key of right child
             parent->keys[parentIndex] = leaf->keys[0];
         } else {
-            // Borrow from right sibling - append to end
+            // Borrowing from right sibling
+            // Example: node [10], right [20,30,40] -> node [10,20], right [30,40]
+
+            // Step 1: Append the leftmost entry from right sibling to end of node
             leaf->keys[leaf->numKeys] = std::move(siblingLeaf->keys[0]);
             leaf->values[leaf->numKeys] = std::move(siblingLeaf->values[0]);
             leaf->numKeys++;
 
-            // Shift left in sibling
+            // Step 2: Shift all entries in right sibling one position to the left
+            // to fill the gap left by the borrowed key
             for (int i = 0; i < siblingLeaf->numKeys - 1; ++i) {
                 siblingLeaf->keys[i] = std::move(siblingLeaf->keys[i + 1]);
                 siblingLeaf->values[i] = std::move(siblingLeaf->values[i + 1]);
             }
             siblingLeaf->numKeys--;
 
+            // Step 3: Update parent separator key to be sibling's new first key
             parent->keys[parentIndex] = siblingLeaf->keys[0];
         }
     } else {
@@ -611,39 +827,52 @@ void BPlusTree<KeyType, ValueType>::redistributeNodes(
             static_cast<InternalNode<KeyType, ValueType>*>(sibling);
 
         if (isLeftSibling) {
-            // Borrow from left sibling - shift keys right
+            // Borrowing from left sibling (internal node)
+            // This involves a rotation through the parent
+            // Example: parent separator K, left [...,A], node [C,...]
+            //          After: left [...], parent separator A, node [K,C,...]
+
+            // Step 1: Shift all keys in node one position to the right
             for (int i = internal->numKeys; i > 0; --i) {
                 internal->keys[i] = std::move(internal->keys[i - 1]);
             }
+            // Step 2: Pull down the parent separator key to node's first position
             internal->keys[0] = parent->keys[parentIndex];
             internal->numKeys++;
 
-            // Shift children right
+            // Step 3: Shift all child pointers in node one position to the right
             int numChildren = internal->numKeys;
             for (int i = numChildren; i > 0; --i) {
                 internal->children[i] = internal->children[i - 1];
             }
+            // Step 4: Move the rightmost child from left sibling to node's first child
             internal->children[0] = siblingInternal->children[siblingInternal->numKeys];
-            internal->children[0]->parent = internal;
+            internal->children[0]->parent = internal;  // Update parent reference
 
+            // Step 5: Push up the rightmost key from left sibling to parent
             parent->keys[parentIndex] = siblingInternal->keys[siblingInternal->numKeys - 1];
-
             siblingInternal->numKeys--;
         } else {
-            // Borrow from right sibling - append to end
+            // Borrowing from right sibling (internal node)
+            // Example: parent separator K, node [...,A], right [C,...]
+            //          After: node [...,A,K], parent separator C, right [...]
+
+            // Step 1: Pull down the parent separator key to end of node
             internal->keys[internal->numKeys] = parent->keys[parentIndex];
             internal->numKeys++;
 
+            // Step 2: Move the leftmost child from right sibling to end of node
             internal->children[internal->numKeys] = siblingInternal->children[0];
-            siblingInternal->children[0]->parent = internal;
+            siblingInternal->children[0]->parent = internal;  // Update parent reference
 
+            // Step 3: Push up the leftmost key from right sibling to parent
             parent->keys[parentIndex] = siblingInternal->keys[0];
 
-            // Shift keys left in sibling
+            // Step 4: Shift all keys in right sibling one position to the left
             for (int i = 0; i < siblingInternal->numKeys - 1; ++i) {
                 siblingInternal->keys[i] = std::move(siblingInternal->keys[i + 1]);
             }
-            // Shift children left in sibling
+            // Step 5: Shift all child pointers in right sibling one position to the left
             int numSiblingChildren = siblingInternal->numKeys + 1;
             for (int i = 0; i < numSiblingChildren - 1; ++i) {
                 siblingInternal->children[i] = siblingInternal->children[i + 1];
