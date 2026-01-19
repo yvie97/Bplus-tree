@@ -9,8 +9,292 @@
 #include <algorithm>
 #include <queue>
 #include <cassert>
+#include <iterator>
 
 namespace bptree {
+
+// Forward declaration
+template<typename KeyType, typename ValueType>
+class BPlusTree;
+
+/**
+ * @brief STL-compatible bidirectional iterator for B+ tree
+ *
+ * This iterator traverses the B+ tree in sorted key order by following
+ * the linked list of leaf nodes. It provides standard iterator operations
+ * including increment, decrement, dereference, and comparison.
+ *
+ * @tparam KeyType The type of keys in the tree
+ * @tparam ValueType The type of values in the tree
+ * @tparam IsConst Whether this is a const iterator
+ */
+template<typename KeyType, typename ValueType, bool IsConst = false>
+class BPlusTreeIterator {
+public:
+    // STL iterator traits
+    using iterator_category = std::bidirectional_iterator_tag;
+    using value_type = std::pair<KeyType, ValueType>;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const value_type*;
+    using reference = const value_type&;
+
+    // Internal types
+    using leaf_node_type = typename std::conditional<IsConst,
+                                                      const LeafNode<KeyType, ValueType>,
+                                                      LeafNode<KeyType, ValueType>>::type;
+
+private:
+    leaf_node_type* current_leaf;  ///< Pointer to current leaf node
+    size_t index;                  ///< Current index within the leaf node
+    mutable value_type cached_pair; ///< Mutable cache for dereference operations
+
+    friend class BPlusTree<KeyType, ValueType>;
+
+    /**
+     * @brief Private constructor for creating iterators
+     * @param leaf Pointer to a leaf node
+     * @param idx Index within the leaf node
+     */
+    BPlusTreeIterator(leaf_node_type* leaf, size_t idx)
+        : current_leaf(leaf), index(idx), cached_pair() {}
+
+public:
+    /**
+     * @brief Default constructor creates an end iterator
+     */
+    BPlusTreeIterator() : current_leaf(nullptr), index(0), cached_pair() {}
+
+    /**
+     * @brief Copy constructor
+     */
+    BPlusTreeIterator(const BPlusTreeIterator& other) = default;
+
+    /**
+     * @brief Copy assignment operator
+     */
+    BPlusTreeIterator& operator=(const BPlusTreeIterator& other) = default;
+
+    /**
+     * @brief Conversion from non-const to const iterator
+     */
+    template<bool WasConst = IsConst>
+    BPlusTreeIterator(const BPlusTreeIterator<KeyType, ValueType, false>& other,
+                      typename std::enable_if<WasConst>::type* = nullptr)
+        : current_leaf(other.current_leaf), index(other.index), cached_pair() {}
+
+    /**
+     * @brief Pre-increment operator (++it)
+     * @return Reference to this iterator after incrementing
+     */
+    BPlusTreeIterator& operator++() {
+        if (!current_leaf) return *this;
+
+        index++;
+        if (index >= current_leaf->numKeys) {
+            if (current_leaf->next) {
+                // Move to next leaf node
+                current_leaf = current_leaf->next;
+                index = 0;
+            }
+            // else: stay at end position (index == numKeys on last leaf)
+        }
+        return *this;
+    }
+
+    /**
+     * @brief Post-increment operator (it++)
+     * @return Copy of iterator before incrementing
+     */
+    BPlusTreeIterator operator++(int) {
+        BPlusTreeIterator temp = *this;
+        ++(*this);
+        return temp;
+    }
+
+    /**
+     * @brief Pre-decrement operator (--it)
+     * @return Reference to this iterator after decrementing
+     */
+    BPlusTreeIterator& operator--() {
+        if (index > 0) {
+            index--;
+        } else if (current_leaf && current_leaf->prev) {
+            // Move to previous leaf node
+            current_leaf = current_leaf->prev;
+            index = current_leaf->numKeys - 1;
+        }
+        return *this;
+    }
+
+    /**
+     * @brief Post-decrement operator (it--)
+     * @return Copy of iterator before decrementing
+     */
+    BPlusTreeIterator operator--(int) {
+        BPlusTreeIterator temp = *this;
+        --(*this);
+        return temp;
+    }
+
+    /**
+     * @brief Dereference operator
+     * @return Reference to key-value pair at current position
+     */
+    reference operator*() const {
+        cached_pair.first = current_leaf->keys[index];
+        cached_pair.second = current_leaf->values[index];
+        return cached_pair;
+    }
+
+    /**
+     * @brief Arrow operator
+     * @return Pointer to key-value pair at current position
+     */
+    pointer operator->() const {
+        cached_pair.first = current_leaf->keys[index];
+        cached_pair.second = current_leaf->values[index];
+        return &cached_pair;
+    }
+
+    /**
+     * @brief Equality comparison
+     * @param other Iterator to compare with
+     * @return true if iterators point to the same position
+     */
+    bool operator==(const BPlusTreeIterator& other) const {
+        return current_leaf == other.current_leaf && index == other.index;
+    }
+
+    /**
+     * @brief Inequality comparison
+     * @param other Iterator to compare with
+     * @return true if iterators point to different positions
+     */
+    bool operator!=(const BPlusTreeIterator& other) const {
+        return !(*this == other);
+    }
+
+    template<typename K, typename V, bool C>
+    friend class BPlusTreeIterator;
+};
+
+// Forward declaration of BPlusTree for friend declaration
+template<typename KeyType, typename ValueType>
+class BPlusTree;
+
+/**
+ * @brief Custom reverse iterator for B+ tree
+ *
+ * This reverse iterator is implemented separately from std::reverse_iterator
+ * to avoid issues with dangling references from cached pairs.
+ */
+template<typename KeyType, typename ValueType, bool IsConst = false>
+class BPlusTreeReverseIterator {
+public:
+    // STL iterator traits
+    using iterator_category = std::bidirectional_iterator_tag;
+    using value_type = std::pair<KeyType, ValueType>;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const value_type*;
+    using reference = const value_type&;
+
+    // Internal types
+    using leaf_node_type = typename std::conditional<IsConst,
+                                                      const LeafNode<KeyType, ValueType>,
+                                                      LeafNode<KeyType, ValueType>>::type;
+
+private:
+    leaf_node_type* current_leaf;
+    size_t index;  // Points to actual element (not one-past like forward iterator's end)
+    mutable value_type cached_pair;
+
+    friend class BPlusTree<KeyType, ValueType>;
+
+    BPlusTreeReverseIterator(leaf_node_type* leaf, size_t idx)
+        : current_leaf(leaf), index(idx), cached_pair() {}
+
+public:
+    BPlusTreeReverseIterator() : current_leaf(nullptr), index(0), cached_pair() {}
+
+    BPlusTreeReverseIterator(const BPlusTreeReverseIterator& other) = default;
+    BPlusTreeReverseIterator& operator=(const BPlusTreeReverseIterator& other) = default;
+
+    template<bool WasConst = IsConst>
+    BPlusTreeReverseIterator(const BPlusTreeReverseIterator<KeyType, ValueType, false>& other,
+                             typename std::enable_if<WasConst>::type* = nullptr)
+        : current_leaf(other.current_leaf), index(other.index), cached_pair() {}
+
+    // Increment moves backwards through the tree
+    BPlusTreeReverseIterator& operator++() {
+        if (!current_leaf) return *this;
+
+        if (index > 0) {
+            index--;
+        } else if (current_leaf->prev) {
+            current_leaf = current_leaf->prev;
+            if (current_leaf->numKeys > 0) {
+                index = current_leaf->numKeys - 1;
+            }
+        } else {
+            // Reached the beginning, set to "end" state
+            current_leaf = nullptr;
+            index = 0;
+        }
+        return *this;
+    }
+
+    BPlusTreeReverseIterator operator++(int) {
+        BPlusTreeReverseIterator temp = *this;
+        ++(*this);
+        return temp;
+    }
+
+    // Decrement moves forward through the tree
+    BPlusTreeReverseIterator& operator--() {
+        if (!current_leaf) return *this;
+
+        index++;
+        if (index >= current_leaf->numKeys) {
+            if (current_leaf->next) {
+                current_leaf = current_leaf->next;
+                index = 0;
+            } else {
+                // Can't go past the last element
+                index = current_leaf->numKeys - 1;
+            }
+        }
+        return *this;
+    }
+
+    BPlusTreeReverseIterator operator--(int) {
+        BPlusTreeReverseIterator temp = *this;
+        --(*this);
+        return temp;
+    }
+
+    reference operator*() const {
+        cached_pair.first = current_leaf->keys[index];
+        cached_pair.second = current_leaf->values[index];
+        return cached_pair;
+    }
+
+    pointer operator->() const {
+        cached_pair.first = current_leaf->keys[index];
+        cached_pair.second = current_leaf->values[index];
+        return &cached_pair;
+    }
+
+    bool operator==(const BPlusTreeReverseIterator& other) const {
+        return current_leaf == other.current_leaf && index == other.index;
+    }
+
+    bool operator!=(const BPlusTreeReverseIterator& other) const {
+        return !(*this == other);
+    }
+
+    template<typename K, typename V, bool C>
+    friend class BPlusTreeReverseIterator;
+};
 
 /**
  * @brief B+ Tree implementation with exception safety guarantees
@@ -39,6 +323,13 @@ namespace bptree {
  */
 template<typename KeyType, typename ValueType>
 class BPlusTree {
+public:
+    // Iterator type definitions
+    using iterator = BPlusTreeIterator<KeyType, ValueType, false>;
+    using const_iterator = BPlusTreeIterator<KeyType, ValueType, true>;
+    using reverse_iterator = BPlusTreeReverseIterator<KeyType, ValueType, false>;
+    using const_reverse_iterator = BPlusTreeReverseIterator<KeyType, ValueType, true>;
+
 private:
     Node<KeyType, ValueType>* root;
     size_t order;      // m
@@ -63,6 +354,12 @@ private:
     void destroyTree(Node<KeyType, ValueType>* node);
     void printNode(const Node<KeyType, ValueType>* node, int level) const;
     bool validateNode(const Node<KeyType, ValueType>* node, int level, int& leafLevel) const;
+
+    // Helper methods for iterators
+    LeafNode<KeyType, ValueType>* getFirstLeaf();
+    const LeafNode<KeyType, ValueType>* getFirstLeaf() const;
+    LeafNode<KeyType, ValueType>* getLastLeaf();
+    const LeafNode<KeyType, ValueType>* getLastLeaf() const;
 
 public:
     /**
@@ -230,6 +527,172 @@ public:
      * Exception safety: No-throw guarantee
      */
     bool isEmpty() const { return root == nullptr; }
+
+    // Iterator methods
+
+    /**
+     * @brief Returns an iterator to the first element
+     *
+     * @return Iterator pointing to the first (smallest) key-value pair,
+     *         or end() if the tree is empty
+     *
+     * Time complexity: O(log n) to find the first leaf
+     * Exception safety: No-throw guarantee
+     */
+    iterator begin() {
+        LeafNode<KeyType, ValueType>* first = getFirstLeaf();
+        return first && first->numKeys > 0 ? iterator(first, 0) : end();
+    }
+
+    /**
+     * @brief Returns a const iterator to the first element
+     *
+     * @return Const iterator pointing to the first (smallest) key-value pair,
+     *         or end() if the tree is empty
+     *
+     * Time complexity: O(log n) to find the first leaf
+     * Exception safety: No-throw guarantee
+     */
+    const_iterator begin() const {
+        const LeafNode<KeyType, ValueType>* first = getFirstLeaf();
+        return first && first->numKeys > 0 ? const_iterator(first, 0) : end();
+    }
+
+    /**
+     * @brief Returns a const iterator to the first element
+     *
+     * @return Const iterator pointing to the first (smallest) key-value pair,
+     *         or cend() if the tree is empty
+     *
+     * Time complexity: O(log n) to find the first leaf
+     * Exception safety: No-throw guarantee
+     */
+    const_iterator cbegin() const {
+        return begin();
+    }
+
+    /**
+     * @brief Returns an iterator to one past the last element
+     *
+     * @return Iterator representing the end of the container
+     *
+     * Time complexity: O(log n) to find the last leaf
+     * Exception safety: No-throw guarantee
+     */
+    iterator end() {
+        if (!root) return iterator(nullptr, 0);
+        LeafNode<KeyType, ValueType>* last = getLastLeaf();
+        return iterator(last, last ? last->numKeys : 0);
+    }
+
+    /**
+     * @brief Returns a const iterator to one past the last element
+     *
+     * @return Const iterator representing the end of the container
+     *
+     * Time complexity: O(log n) to find the last leaf
+     * Exception safety: No-throw guarantee
+     */
+    const_iterator end() const {
+        if (!root) return const_iterator(nullptr, 0);
+        const LeafNode<KeyType, ValueType>* last = getLastLeaf();
+        return const_iterator(last, last ? last->numKeys : 0);
+    }
+
+    /**
+     * @brief Returns a const iterator to one past the last element
+     *
+     * @return Const iterator representing the end of the container
+     *
+     * Time complexity: O(1)
+     * Exception safety: No-throw guarantee
+     */
+    const_iterator cend() const {
+        return end();
+    }
+
+    /**
+     * @brief Returns a reverse iterator to the first element of reversed container
+     *
+     * @return Reverse iterator pointing to the last (largest) key-value pair,
+     *         or rend() if the tree is empty
+     *
+     * Time complexity: O(log n) to find the last leaf
+     * Exception safety: No-throw guarantee
+     */
+    reverse_iterator rbegin() {
+        if (!root) return reverse_iterator(nullptr, 0);
+        LeafNode<KeyType, ValueType>* last = getLastLeaf();
+        return last && last->numKeys > 0 ?
+               reverse_iterator(last, last->numKeys - 1) :
+               reverse_iterator(nullptr, 0);
+    }
+
+    /**
+     * @brief Returns a const reverse iterator to the first element of reversed container
+     *
+     * @return Const reverse iterator pointing to the last (largest) key-value pair,
+     *         or rend() if the tree is empty
+     *
+     * Time complexity: O(log n) to find the last leaf
+     * Exception safety: No-throw guarantee
+     */
+    const_reverse_iterator rbegin() const {
+        if (!root) return const_reverse_iterator(nullptr, 0);
+        const LeafNode<KeyType, ValueType>* last = getLastLeaf();
+        return last && last->numKeys > 0 ?
+               const_reverse_iterator(last, last->numKeys - 1) :
+               const_reverse_iterator(nullptr, 0);
+    }
+
+    /**
+     * @brief Returns a const reverse iterator to the first element of reversed container
+     *
+     * @return Const reverse iterator pointing to the last (largest) key-value pair,
+     *         or crend() if the tree is empty
+     *
+     * Time complexity: O(log n) to find the last leaf
+     * Exception safety: No-throw guarantee
+     */
+    const_reverse_iterator crbegin() const {
+        return rbegin();
+    }
+
+    /**
+     * @brief Returns a reverse iterator to one past the last element of reversed container
+     *
+     * @return Reverse iterator representing the end of the reversed container
+     *
+     * Time complexity: O(1)
+     * Exception safety: No-throw guarantee
+     */
+    reverse_iterator rend() {
+        return reverse_iterator(nullptr, 0);
+    }
+
+    /**
+     * @brief Returns a const reverse iterator to one past the last element of reversed container
+     *
+     * @return Const reverse iterator representing the end of the reversed container
+     *
+     * Time complexity: O(1)
+     * Exception safety: No-throw guarantee
+     */
+    const_reverse_iterator rend() const {
+        return const_reverse_iterator(nullptr, 0);
+    }
+
+    /**
+     * @brief Returns a const reverse iterator to one past the last element of reversed container
+     *
+     * @return Const reverse iterator representing the end of the reversed container
+     *
+     * Time complexity: O(1)
+     * Exception safety: No-throw guarantee
+     */
+    const_reverse_iterator crend() const {
+        return rend();
+    }
 };
 
 // Constructor
@@ -1031,6 +1494,73 @@ bool BPlusTree<KeyType, ValueType>::validateNode(const Node<KeyType, ValueType>*
     }
 
     return true;
+}
+
+// Helper methods for iterators
+template<typename KeyType, typename ValueType>
+LeafNode<KeyType, ValueType>* BPlusTree<KeyType, ValueType>::getFirstLeaf() {
+    if (!root) return nullptr;
+
+    Node<KeyType, ValueType>* current = root;
+    while (current->isInternal()) {
+        assert(current->isInternal() && "Expected internal node");
+        InternalNode<KeyType, ValueType>* internal =
+            static_cast<InternalNode<KeyType, ValueType>*>(current);
+        current = internal->children[0];
+    }
+
+    assert(current->isLeaf() && "Expected leaf node");
+    return static_cast<LeafNode<KeyType, ValueType>*>(current);
+}
+
+template<typename KeyType, typename ValueType>
+const LeafNode<KeyType, ValueType>* BPlusTree<KeyType, ValueType>::getFirstLeaf() const {
+    if (!root) return nullptr;
+
+    const Node<KeyType, ValueType>* current = root;
+    while (current->isInternal()) {
+        assert(current->isInternal() && "Expected internal node");
+        const InternalNode<KeyType, ValueType>* internal =
+            static_cast<const InternalNode<KeyType, ValueType>*>(current);
+        current = internal->children[0];
+    }
+
+    assert(current->isLeaf() && "Expected leaf node");
+    return static_cast<const LeafNode<KeyType, ValueType>*>(current);
+}
+
+template<typename KeyType, typename ValueType>
+LeafNode<KeyType, ValueType>* BPlusTree<KeyType, ValueType>::getLastLeaf() {
+    if (!root) return nullptr;
+
+    Node<KeyType, ValueType>* current = root;
+    while (current->isInternal()) {
+        assert(current->isInternal() && "Expected internal node");
+        InternalNode<KeyType, ValueType>* internal =
+            static_cast<InternalNode<KeyType, ValueType>*>(current);
+        // Last child is at index numKeys
+        current = internal->children[current->numKeys];
+    }
+
+    assert(current->isLeaf() && "Expected leaf node");
+    return static_cast<LeafNode<KeyType, ValueType>*>(current);
+}
+
+template<typename KeyType, typename ValueType>
+const LeafNode<KeyType, ValueType>* BPlusTree<KeyType, ValueType>::getLastLeaf() const {
+    if (!root) return nullptr;
+
+    const Node<KeyType, ValueType>* current = root;
+    while (current->isInternal()) {
+        assert(current->isInternal() && "Expected internal node");
+        const InternalNode<KeyType, ValueType>* internal =
+            static_cast<const InternalNode<KeyType, ValueType>*>(current);
+        // Last child is at index numKeys
+        current = internal->children[current->numKeys];
+    }
+
+    assert(current->isLeaf() && "Expected leaf node");
+    return static_cast<const LeafNode<KeyType, ValueType>*>(current);
 }
 
 } // namespace bptree

@@ -22,9 +22,12 @@ target_include_directories(bplustree INTERFACE
     $<INSTALL_INTERFACE:include>
 )
 
-# Example executable
+# Example executables
 add_executable(demo examples/demo.cpp)
 target_link_libraries(demo bplustree)
+
+add_executable(iterator_demo examples/iterator_demo.cpp)
+target_link_libraries(iterator_demo bplustree)
 
 # Enable testing
 enable_testing()
@@ -61,3 +64,7 @@ add_test(NAME test_stress COMMAND test_stress)
 add_executable(test_validate tests/test_validate.cpp)
 target_link_libraries(test_validate bplustree)
 add_test(NAME test_validate COMMAND test_validate)
+
+add_executable(test_iterator tests/test_iterator.cpp)
+target_link_libraries(test_iterator bplustree)
+add_test(NAME test_iterator COMMAND test_iterator)
