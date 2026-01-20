@@ -528,6 +528,68 @@ public:
      */
     bool isEmpty() const { return root == nullptr; }
 
+    /**
+     * @brief Efficiently constructs the tree from sorted data using bulk loading
+     *
+     * Bulk loading builds a B+ tree from pre-sorted data in O(n) time, which is
+     * significantly faster than inserting elements one by one (O(n log n)).
+     * The algorithm builds the tree bottom-up:
+     * 1. Creates leaf nodes filled to optimal capacity
+     * 2. Links leaves into a doubly-linked list
+     * 3. Builds internal node levels from the bottom up
+     *
+     * IMPORTANT: The input data MUST be sorted in ascending order by key.
+     * If the data is not sorted, the resulting tree will be invalid.
+     * Duplicate keys are allowed; later duplicates will overwrite earlier ones
+     * (only the last value for a duplicate key is retained).
+     *
+     * If the tree already contains data, it will be cleared before loading.
+     *
+     * @tparam InputIterator An input iterator type that dereferences to
+     *         std::pair<KeyType, ValueType> or a compatible type
+     * @param first Iterator to the first element in the sorted range
+     * @param last Iterator to one past the last element in the sorted range
+     *
+     * Time complexity: O(n) where n is the number of elements
+     * Space complexity: O(n) for the tree nodes
+     * Exception safety: Basic guarantee - if an exception is thrown during
+     *                   construction, the tree will be empty
+     *
+     * @code
+     * // Example usage with a sorted vector:
+     * std::vector<std::pair<int, std::string>> data = {{1, "a"}, {2, "b"}, {3, "c"}};
+     * BPlusTree<int, std::string> tree;
+     * tree.bulkLoad(data.begin(), data.end());
+     * @endcode
+     */
+    template<typename InputIterator>
+    void bulkLoad(InputIterator first, InputIterator last);
+
+    /**
+     * @brief Convenience overload for bulk loading from a vector of pairs
+     *
+     * @param data A vector of key-value pairs, MUST be sorted by key in ascending order
+     *
+     * @see bulkLoad(InputIterator, InputIterator) for details
+     */
+    void bulkLoad(const std::vector<std::pair<KeyType, ValueType>>& data) {
+        bulkLoad(data.begin(), data.end());
+    }
+
+    /**
+     * @brief Convenience overload for bulk loading from a moved vector of pairs
+     *
+     * This overload allows efficient bulk loading when the source vector is no longer needed.
+     * Values are moved from the vector into the tree.
+     *
+     * @param data A vector of key-value pairs, MUST be sorted by key in ascending order
+     *
+     * @see bulkLoad(InputIterator, InputIterator) for details
+     */
+    void bulkLoad(std::vector<std::pair<KeyType, ValueType>>&& data) {
+        bulkLoad(std::make_move_iterator(data.begin()), std::make_move_iterator(data.end()));
+    }
+
     // Iterator methods
 
     /**
@@ -1561,6 +1623,187 @@ const LeafNode<KeyType, ValueType>* BPlusTree<KeyType, ValueType>::getLastLeaf()
 
     assert(current->isLeaf() && "Expected leaf node");
     return static_cast<const LeafNode<KeyType, ValueType>*>(current);
+}
+
+// Bulk loading implementation
+template<typename KeyType, typename ValueType>
+template<typename InputIterator>
+void BPlusTree<KeyType, ValueType>::bulkLoad(InputIterator first, InputIterator last) {
+    // Clear existing tree if any
+    if (root) {
+        destroyTree(root);
+        root = nullptr;
+    }
+
+    // Handle empty input
+    if (first == last) {
+        return;
+    }
+
+    // Step 1: Collect all data into a temporary buffer (handling duplicates)
+    std::vector<std::pair<KeyType, ValueType>> buffer;
+    for (auto it = first; it != last; ++it) {
+        // Handle duplicate keys: if current key equals the last key, overwrite
+        if (!buffer.empty() && buffer.back().first == it->first) {
+            buffer.back().second = it->second;
+        } else {
+            buffer.emplace_back(it->first, it->second);
+        }
+    }
+
+    // Handle empty input
+    if (buffer.empty()) {
+        return;
+    }
+
+    // Step 2: Calculate optimal leaf distribution
+    size_t totalElements = buffer.size();
+    size_t numLeaves;
+
+    if (totalElements <= maxKeys) {
+        // Fits in a single leaf (which will be the root)
+        numLeaves = 1;
+    } else {
+        // Calculate number of leaves needed
+        // Each leaf can have at most maxKeys and at least minKeys elements
+        numLeaves = (totalElements + maxKeys - 1) / maxKeys;  // Minimum leaves needed
+
+        // Ensure each leaf has at least minKeys elements
+        size_t maxPossibleLeaves = totalElements / minKeys;
+        if (numLeaves > maxPossibleLeaves && maxPossibleLeaves > 0) {
+            numLeaves = maxPossibleLeaves;
+        }
+    }
+
+    // Step 3: Build leaf nodes with evenly distributed elements
+    std::vector<LeafNode<KeyType, ValueType>*> leaves;
+    LeafNode<KeyType, ValueType>* prevLeaf = nullptr;
+
+    try {
+        size_t elementIndex = 0;
+        for (size_t leafIdx = 0; leafIdx < numLeaves; ++leafIdx) {
+            LeafNode<KeyType, ValueType>* newLeaf =
+                new LeafNode<KeyType, ValueType>(maxKeys);
+            leaves.push_back(newLeaf);
+
+            // Link to previous leaf
+            if (prevLeaf) {
+                prevLeaf->next = newLeaf;
+                newLeaf->prev = prevLeaf;
+            }
+
+            // Calculate how many elements this leaf should get
+            size_t remainingLeaves = numLeaves - leafIdx;
+            size_t remainingElements = totalElements - elementIndex;
+            size_t elementsForThis = (remainingElements + remainingLeaves - 1) / remainingLeaves;
+
+            // Don't exceed maxKeys
+            if (elementsForThis > maxKeys) {
+                elementsForThis = maxKeys;
+            }
+
+            // Fill the leaf
+            for (size_t e = 0; e < elementsForThis && elementIndex < totalElements; ++e) {
+                newLeaf->keys[newLeaf->numKeys] = std::move(buffer[elementIndex].first);
+                newLeaf->values[newLeaf->numKeys] = std::move(buffer[elementIndex].second);
+                newLeaf->numKeys++;
+                elementIndex++;
+            }
+
+            prevLeaf = newLeaf;
+        }
+
+        // If we only have one leaf, it becomes the root
+        if (leaves.size() == 1) {
+            root = leaves[0];
+            return;
+        }
+
+        // Step 4: Build internal node levels from bottom up
+        std::vector<Node<KeyType, ValueType>*> currentLevel(leaves.begin(), leaves.end());
+
+        // Helper lambda to get the leftmost key in a subtree (used for separator keys)
+        auto getLeftmostKey = [](Node<KeyType, ValueType>* node) -> KeyType {
+            while (node->isInternal()) {
+                InternalNode<KeyType, ValueType>* internal =
+                    static_cast<InternalNode<KeyType, ValueType>*>(node);
+                node = internal->children[0];
+            }
+            return node->keys[0];
+        };
+
+        while (currentLevel.size() > 1) {
+            std::vector<Node<KeyType, ValueType>*> nextLevel;
+
+            // Calculate how many children can fit in each internal node
+            // Each internal node can have at most (maxKeys + 1) children
+            size_t maxChildren = maxKeys + 1;
+            size_t minChildren = minKeys + 1;  // Minimum children for non-root internal nodes
+
+            // Calculate the number of internal nodes needed
+            size_t numChildren = currentLevel.size();
+            size_t numInternalNodes = (numChildren + maxChildren - 1) / maxChildren;
+
+            // Ensure each internal node gets at least minChildren
+            // With k nodes and n children, the minimum any node gets is floor(n/k)
+            // We need floor(n/k) >= minChildren, so k <= floor(n/minChildren)
+            size_t maxPossibleNodes = numChildren / minChildren;
+            if (maxPossibleNodes == 0) {
+                maxPossibleNodes = 1;  // At least 1 node (will be root)
+            }
+            if (numInternalNodes > maxPossibleNodes) {
+                numInternalNodes = maxPossibleNodes;
+            }
+
+            // Build internal nodes with distributed children
+            size_t childIndex = 0;
+            for (size_t nodeIdx = 0; nodeIdx < numInternalNodes; ++nodeIdx) {
+                InternalNode<KeyType, ValueType>* newInternal =
+                    new InternalNode<KeyType, ValueType>(maxKeys);
+                nextLevel.push_back(newInternal);
+
+                // Calculate how many children this node should get
+                size_t remainingNodes = numInternalNodes - nodeIdx;
+                size_t remainingChildren = numChildren - childIndex;
+                size_t childrenForThis = (remainingChildren + remainingNodes - 1) / remainingNodes;
+
+                // Don't exceed maxChildren
+                if (childrenForThis > maxChildren) {
+                    childrenForThis = maxChildren;
+                }
+
+                // Assign children to this internal node
+                for (size_t c = 0; c < childrenForThis && childIndex < numChildren; ++c) {
+                    if (c == 0) {
+                        // First child - no separator key needed
+                        newInternal->children[0] = currentLevel[childIndex];
+                        currentLevel[childIndex]->parent = newInternal;
+                    } else {
+                        // Add separator key and child
+                        KeyType separatorKey = getLeftmostKey(currentLevel[childIndex]);
+                        newInternal->keys[newInternal->numKeys] = separatorKey;
+                        newInternal->numKeys++;
+                        newInternal->children[newInternal->numKeys] = currentLevel[childIndex];
+                        currentLevel[childIndex]->parent = newInternal;
+                    }
+                    childIndex++;
+                }
+            }
+
+            currentLevel = std::move(nextLevel);
+        }
+
+        // The last remaining node is the root
+        root = currentLevel[0];
+
+    } catch (...) {
+        // Clean up all allocated nodes on exception
+        for (auto* leaf : leaves) {
+            delete leaf;
+        }
+        root = nullptr;
+        throw;
+    }
 }
 
 } // namespace bptree

@@ -68,3 +68,7 @@ add_test(NAME test_validate COMMAND test_validate)
 add_executable(test_iterator tests/test_iterator.cpp)
 target_link_libraries(test_iterator bplustree)
 add_test(NAME test_iterator COMMAND test_iterator)
+
+add_executable(test_bulk_load tests/test_bulk_load.cpp)
+target_link_libraries(test_bulk_load bplustree)
+add_test(NAME test_bulk_load COMMAND test_bulk_load)
